@@ -1,0 +1,29 @@
+version: '3.8'
+
+services:
+  go-app:
+    build: .
+    container_name: go-app
+    depends_on:
+      - influxdb
+    environment:
+      - INFLUXDB_ADDRESS=http://influxdb:8086
+      - MQTT_BROKER_URL=mqtt://test.mosquitto.org:1883
+    networks:
+      - mqtt-sensor-tracker_default
+
+  influxdb:
+    image: influxdb:1.8
+    container_name: influxdb
+    networks:
+      - mqtt-sensor-tracker_default
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafana
+    networks:
+      - mqtt-sensor-tracker_default
+
+networks:
+  mqtt-sensor-tracker_default:
+    driver: bridge
