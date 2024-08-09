@@ -1,0 +1,41 @@
+version: '3.8'
+
+services:
+  influxdb:
+    image: influxdb:1.8
+    container_name: influxdb
+    ports:
+      - "8086:8086"
+    environment:
+      INFLUXDB_DB: sensors
+      INFLUXDB_HTTP_AUTH_ENABLED: "false"
+    volumes:
+      - influxdb_data:/var/lib/influxdb
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafana
+    ports:
+      - "3000:3000"
+    depends_on:
+      - influxdb
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+    volumes:
+      - grafana_data:/var/lib/grafana
+
+  go-app:
+    build: .
+    container_name: go-app
+    depends_on:
+      - influxdb
+    environment:
+      - INFLUXDB_ADDRESS=http://influxdb:8086
+      - MQTT_BROKER_URL=mqtt://test.mosquitto.org:1883
+    volumes:
+      - .:/app/src
+    command: /app/main
+
+volumes:
+  influxdb_data:
+  grafana_data:
