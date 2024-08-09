@@ -3,7 +3,7 @@ package main
 import (
 	"fmt"
 	"log"
-	"strconv"
+	"os"
 	"time"
 
 	mqtt "github.com/eclipse/paho.mqtt.golang"
@@ -11,61 +11,74 @@ import (
 )
 
 var (
-	brokerURL = "mqtt://test.mosquitto.org:1883" // Use "ssl://test.mosquitto.org:8883" for encrypted
-	clientID  = "go-client"
-	topic1    = "sensors/esptemp04/temperature"
-
-	influxDBAddress = "http://influxdb:8086"
-	influxDBName    = "sensors"
-	influxUsername  = "" // If authentication is required
-	influxPassword  = ""
+	brokerURL     = getEnv("MQTT_BROKER_URL", "mqtt://test.mosquitto.org:1883")
+	clientID      = "go-client"
+	topic1        = "sensors/esptemp04/temperature"
+	influxDBAddress = getEnv("INFLUXDB_ADDRESS", "http://influxdb:8086")
+	influxDBName  = "sensors"
+	influxUsername = "" // If authentication is required
+	influxPassword = ""
 )
 
-func main() {
-	// Create a new MQTT client options
-	opts := mqtt.NewClientOptions()
-	opts.AddBroker(brokerURL)
-	opts.SetClientID(clientID)
-	opts.SetCleanSession(true)
-
-	// Set up the message handler
-	opts.SetDefaultPublishHandler(func(client mqtt.Client, msg mqtt.Message) {
-		fmt.Printf("Received message on topic %s: %s\n", msg.Topic(), msg.Payload())
-
-		// Parse the payload and log to InfluxDB
-		err := logToInfluxDB(string(msg.Payload()))
-		if err != nil {
-			log.Printf("Error logging to InfluxDB: %v\n", err)
-		}
-	})
-
-	// Create a new MQTT client
-	client := mqtt.NewClient(opts)
-
-	// Connect to the broker
-	if token := client.Connect(); token.Wait() && token.Error() != nil {
-		log.Fatal(token.Error())
+func getEnv(key, fallback string) string {
+	if value, exists := os.LookupEnv(key); exists {
+		return value
 	}
-
-	fmt.Println("Connected to broker")
-
-	// Subscribe to topics
-	if token := client.Subscribe(topic1, 0, nil); token.Wait() && token.Error() != nil {
-		log.Fatal(token.Error())
-	}
-	fmt.Printf("Subscribed to topic %s\n", topic1)
-
-	// Wait forever
-	select {}
+	return fallback
 }
 
-func logToInfluxDB(temperatureStr string) error {
-	// Convert the temperature string to a float64
-	temperature, err := strconv.ParseFloat(temperatureStr, 64)
-	if err != nil {
-		return fmt.Errorf("failed to parse temperature '%s': %w", temperatureStr, err)
-	}
+func connectToBroker(client mqtt.Client) error {
+    maxRetries := 5
+    for retries := 0; retries < maxRetries; retries++ {
+        if token := client.Connect(); token.Wait() && token.Error() != nil {
+            log.Printf("Error connecting to broker (attempt %d/%d): %v\n", retries+1, maxRetries, token.Error())
+            time.Sleep(2 * time.Second) // Wait before retrying
+        } else {
+            log.Println("Connected to broker")
+            return nil
+        }
+    }
+    return fmt.Errorf("failed to connect to broker after %d attempts", maxRetries)
+}
 
+func main() {
+    // Create a new MQTT client options
+    opts := mqtt.NewClientOptions()
+    opts.AddBroker(brokerURL)
+    opts.SetClientID(clientID)
+    opts.SetCleanSession(true)
+
+    // Set up the message handler
+    opts.SetDefaultPublishHandler(func(client mqtt.Client, msg mqtt.Message) {
+        fmt.Printf("Received message on topic %s: %s\n", msg.Topic(), msg.Payload())
+
+        // Parse the payload and log to InfluxDB
+        err := logToInfluxDB(string(msg.Payload()))
+        if err != nil {
+            log.Printf("Error logging to InfluxDB: %v\n", err)
+        }
+    })
+
+    // Create a new MQTT client
+    client := mqtt.NewClient(opts)
+
+    // Connect to the broker with retries
+    if err := connectToBroker(client); err != nil {
+        log.Fatal(err)
+    }
+
+    // Subscribe to topics
+    if token := client.Subscribe(topic1, 0, nil); token.Wait() && token.Error() != nil {
+        log.Fatal(token.Error())
+    }
+    fmt.Printf("Subscribed to topic %s\n", topic1)
+
+    // Wait forever
+    select {}
+}
+
+
+func logToInfluxDB(temperature string) error {
 	// Create a new InfluxDB client
 	c, err := influxdb.NewHTTPClient(influxdb.HTTPConfig{
 		Addr:     influxDBAddress,
@@ -73,13 +86,9 @@ func logToInfluxDB(temperatureStr string) error {
 		Password: influxPassword,
 	})
 	if err != nil {
-		return fmt.Errorf("failed to create InfluxDB client: %w", err)
+		return err
 	}
-	defer func() {
-		if cerr := c.Close(); cerr != nil {
-			log.Printf("failed to close InfluxDB client: %v", cerr)
-		}
-	}()
+	defer c.Close()
 
 	// Create a new point batch
 	bp, err := influxdb.NewBatchPoints(influxdb.BatchPointsConfig{
@@ -87,26 +96,25 @@ func logToInfluxDB(temperatureStr string) error {
 		Precision: "s",
 	})
 	if err != nil {
-		return fmt.Errorf("failed to create batch points: %w", err)
+		return err
 	}
 
 	// Create a point and add to batch
 	tags := map[string]string{"sensor": "esptemp04"}
 	fields := map[string]interface{}{
-		"temperature": temperature, // Use the float64 value here
+		"temperature": temperature,
 	}
 
 	pt, err := influxdb.NewPoint("temperature", tags, fields, time.Now())
 	if err != nil {
-		return fmt.Errorf("failed to create point: %w", err)
+		return err
 	}
 	bp.AddPoint(pt)
 
 	// Write the batch
 	if err := c.Write(bp); err != nil {
-		return fmt.Errorf("failed to write batch points: %w", err)
+		return err
 	}
 
 	return nil
 }
-
